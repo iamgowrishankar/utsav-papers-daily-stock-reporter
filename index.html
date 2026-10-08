@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0f172a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="manifest" href="manifest.webmanifest">
+<title>Daily Stock Report</title>
+<style>
+:root{--bg:#0f172a;--card:#1e293b;--input:#0b1220;--border:#334155;--text:#f8fafc;--muted:#94a3b8;--green:#22c55e;--red:#ef4444;--blue:#3b82f6;--yellow:#eab308}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px Arial,sans-serif;padding:12px}.wrap{max-width:950px;margin:auto}
+header{text-align:center;padding:8px 0 16px}h1{font-size:22px;margin:0 0 5px}header p{margin:0;color:var(--muted);font-size:12px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:15px;margin-bottom:12px}
+.title{font-weight:700;padding-bottom:9px;border-bottom:1px solid var(--border);margin-bottom:12px}
+.sub{font-size:11px;color:var(--muted);font-weight:700;text-transform:uppercase;margin:15px 0 8px}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}.field{display:flex;flex-direction:column;gap:5px}.full{grid-column:1/-1}
+label{font-size:11px;color:#cbd5e1}.current{background:#0b1220;border:1px solid #263449;border-radius:7px;padding:9px;color:#4ade80;font-weight:700;min-height:36px}
+input,textarea,button{font:inherit}input,textarea{width:100%;border:1px solid var(--border);background:var(--input);color:var(--text);border-radius:7px;padding:10px;outline:0}input:focus,textarea:focus{border-color:var(--blue)}textarea{min-height:80px}
+.qtyrow{display:grid;grid-template-columns:1fr 1fr;gap:6px}.qtyrow input{min-width:0}.hint{font-size:10px;color:var(--muted)}
+.actions{position:sticky;bottom:0;background:var(--bg);padding:8px 0;z-index:5;display:grid;grid-template-columns:1fr 1fr;gap:8px}
+button{border:0;border-radius:9px;padding:13px;font-weight:700;cursor:pointer}.add{background:#16a34a;color:#fff}.out{background:#dc2626;color:#fff}.wa{background:#25d366;color:#fff}.secondary{background:var(--card);color:#fff;border:1px solid var(--border)}
+.toolbar{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}.toolbar button{font-size:12px}
+.status{padding:9px;border-radius:8px;background:#132033;color:#cbd5e1;font-size:12px;margin-bottom:12px}
+.negative{color:#f87171!important}.ok{color:#4ade80!important}
+@media(max-width:600px){.grid,.actions,.toolbar{grid-template-columns:1fr}.qtyrow{grid-template-columns:1fr 1fr}.card{padding:12px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header><h1>📊 Daily Stock Report</h1><p>Persistent phone stock • IndexedDB • 7-day JSON backup</p></header>
+
+<div id="status" class="status">Loading saved stock…</div>
+
+<div class="toolbar">
+<button class="secondary" onclick="downloadBackup()">💾 Backup 7 Days</button>
+<button class="secondary" onclick="document.getElementById('restoreFile').click()">♻️ Restore JSON</button>
+<button class="secondary" onclick="resetAll()">🗑️ Reset All Data</button>
+<input id="restoreFile" type="file" accept=".json,application/json" hidden onchange="restoreBackup(event)">
+</div>
+
+<div class="card">
+<div class="title">📅 Report Date</div>
+<div class="field"><label>Date</label><input type="date" id="reportDate"></div>
+</div>
+
+<div class="card">
+<div class="title">🟢 CURRENT IN STOCK</div>
+<div id="currentStock"></div>
+</div>
+
+<div class="card">
+<div class="title">➕ ADD / RECEIVE NEW STOCK</div>
+<div class="hint">Enter only what was newly received/added. It will be added to the saved current stock.</div>
+<div id="addStock"></div>
+</div>
+
+<div class="card">
+<div class="title">🔴 TODAY'S OUT STOCK</div>
+<div class="hint">Enter only what went out today. Stock will be reduced automatically. Negative stock is blocked.</div>
+<div id="outStock"></div>
+</div>
+
+<div class="card">
+<div class="title">💰 DAILY CASH / UPI SALE</div>
+<div class="grid">
+<div class="field"><label>💵 Cash Sale (₹)</label><input type="number" min="0" step="0.01" id="cashSale" placeholder="0"></div>
+<div class="field"><label>📱 UPI Sale (₹)</label><input type="number" min="0" step="0.01" id="upiSale" placeholder="0"></div>
+<div class="field full"><label>🧾 Sale Details (Optional)</label><textarea id="saleDetails" placeholder="Customer - Amount - Cash/UPI"></textarea></div>
+</div>
+</div>
+
+<div class="actions">
+<button class="add" onclick="applyAdd()">➕ Add Stock</button>
+<button class="out" onclick="applyOut()">➖ Record Out Stock</button>
+<button class="wa" onclick="sendWhatsApp()">📲 Send to WhatsApp</button>
+<button class="secondary" onclick="saveSales()">💾 Save Daily Sales</button>
+</div>
+</div>
+
+<script>
+const DB_NAME="dailyStockDB", DB_VERSION=1, STOCK_STORE="stock", DAY_STORE="days";
+let db, stock={}, currentDate="";
+
+const groups=[
+ {title:"📦 REELS (Count / Weight)", items:[
+  {id:"soft1",name:"Soft 1-Ply",type:"dual",u1:"reels",u2:"kg"},
+  {id:"soft2",name:"Soft 2-Ply",type:"dual",u1:"reels",u2:"kg"},
+  {id:"soft2_71",name:"Soft 2-Ply (71cm)",type:"dual",u1:"reels",u2:"kg"},
+  {id:"bamboo",name:"Bamboo 1-Ply",type:"dual",u1:"reels",u2:"kg"},
+  {id:"poster",name:"Poster 1-Ply",type:"dual",u1:"reels",u2:"kg"},
+  {id:"soft1_waste",name:"Soft 1-Ply Waste",type:"single",u1:"kg"},
+  {id:"soft2_waste",name:"Soft 2-Ply Waste",type:"single",u1:"kg"},
+  {id:"soft2_71_waste",name:"Soft 2-Ply (71cm) Waste",type:"single",u1:"kg"},
+  {id:"bamboo_waste",name:"Bamboo 1-Ply Waste",type:"single",u1:"kg"},
+  {id:"poster_waste",name:"Poster 1-Ply Waste",type:"single",u1:"kg"}
+ ]},
+ {title:"🧻 FINISHED ROLLS & BOXES",items:[
+  {id:"roll200",name:"Rolls (200 gm)",type:"single",u1:"pcs"},
+  {id:"roll100",name:"Rolls (100 gm)",type:"single",u1:"pcs"},
+  {id:"roll50",name:"Rolls (50 gm)",type:"single",u1:"pcs"},
+  {id:"mfold",name:"M-Fold",type:"dual",u1:"boxes",u2:"pcs"},
+  {id:"bedroll",name:"Bed Rolls",type:"single",u1:"boxes"},
+  {id:"hrt",name:"HRT Rolls",type:"single",u1:"pcs"},
+  {id:"lfold",name:"L-Fold Box",type:"single",u1:"boxes"}
+ ]},
+ {title:"🧻 INDUSTRIAL & KITCHEN ROLLS",items:[
+  {id:"industrial_roll",name:"Industrial Roll",type:"single",u1:"pcs"},
+  {id:"kitchen_small_roll",name:"Kitchen Small Roll",type:"single",u1:"pcs"}
+ ]},
+ {title:"🛍️ PACKAGING (By Weight)",items:[
+  {id:"6x8",name:"6x8",type:"single",u1:"kg"},
+  {id:"7x8",name:"7x8",type:"single",u1:"kg"},
+  {id:"7x10",name:"7x10",type:"single",u1:"kg"},
+  {id:"8x12",name:"8x12",type:"single",u1:"kg"},
+  {id:"9x12",name:"9x12",type:"single",u1:"kg"},
+  {id:"10x12",name:"10x12",type:"single",u1:"kg"},
+  {id:"12x12",name:"12x12",type:"single",u1:"kg"},
+  {id:"shrink",name:"Shrink Covers",type:"single",u1:"kg"},
+  {id:"tape",name:"Tape",type:"single",u1:"qty"},
+  {id:"clib",name:"Clib",type:"single",u1:"qty"},
+  {id:"pati_roll",name:"Pati Roll",type:"single",u1:"qty"},
+  {id:"stretch_film",name:"Stretch Film",type:"single",u1:"qty"}
+ ]},
+ {title:"📦 BOXES & BAGS",items:[
+  {id:"gunny",name:"White Gunny Bags",type:"single",u1:"nos"},
+  {id:"plainbox",name:"Plain Boxes",type:"single",u1:"nos"},
+  {id:"tissuebox",name:"Tissue Boxes",type:"single",u1:"nos"},
+  {id:"radison_tissuebox",name:"Radison Space Tissue Box",type:"single",u1:"nos"},
+  {id:"kraft",name:"Kraft Boxes",type:"single",u1:"nos"},
+  {id:"plain2ply",name:"Plain 2-Ply Boxes",type:"single",u1:"nos"}
+ ]},
+ {title:"📄 SHEETS & CORES",items:[
+  {id:"sheet100",name:"Sheet (100 gm)",type:"single",u1:"nos"},
+  {id:"sheet200",name:"Sheet (200 gm)",type:"single",u1:"nos"},
+  {id:"core_small",name:"Core (Small)",type:"single",u1:"pcs"},
+  {id:"core_big",name:"Core (Big)",type:"single",u1:"pcs"}
+ ]},
+ {title:"🔲 DISPENSERS & OTHERS",items:[
+  {id:"mfold_disp",name:"M-Fold Dispenser (Big)",type:"single",u1:"nos"},
+  {id:"lfold_disp",name:"L-Fold Dispenser",type:"single",u1:"nos"},
+  {id:"nonwoven",name:"Non-Woven Tissue",type:"single",u1:"qty"}
+ ]}
+];
+
+function allItems(){return groups.flatMap(g=>g.items)}
+function emptyVal(){return {a:0,b:0}}
+function initStock(){const o={};allItems().forEach(i=>o[i.id]=emptyVal());return o}
+function today(){return new Date().toISOString().slice(0,10)}
+function fmt(n){return Number.isInteger(n)?String(n):String(Number(n.toFixed(3)))}
+function labelValue(i,v){
+ if(i.type==="dual"){
+   const a=v?.a||0,b=v?.b||0;
+   if(!a&&!b)return "0";
+   return `${fmt(a)} ${i.u1} (${fmt(b)} ${i.u2})`;
+ }
+ return `${fmt(v?.a||0)} ${i.u1}`;
+}
+function validNum(v){return Number.isFinite(Number(v))&&Number(v)>=0}
+function val(id,suffix){return Number(document.getElementById(`${suffix}_${id}${suffix==="add"||suffix==="out"?"_a":"_a"}`)?.value||0)}
+function render(){
+ renderCurrent(); renderDelta("addStock","add"); renderDelta("outStock","out");
+}
+function renderCurrent(){
+ const el=document.getElementById("currentStock"); el.innerHTML="";
+ groups.forEach(g=>{
+  const sub=document.createElement("div");sub.className="sub";sub.textContent=g.title;el.appendChild(sub);
+  const grid=document.createElement("div");grid.className="grid";
+  g.items.forEach(i=>{
+   const f=document.createElement("div");f.className="field";
+   f.innerHTML=`<label>${i.name}</label><div id="cur_${i.id}" class="current">${labelValue(i,stock[i.id]||emptyVal())}</div>`;
+   grid.appendChild(f);
+  });el.appendChild(grid);
+ });
+}
+function renderDelta(containerId,prefix){
+ const el=document.getElementById(containerId);el.innerHTML="";
+ groups.forEach(g=>{
+  const sub=document.createElement("div");sub.className="sub";sub.textContent=g.title;el.appendChild(sub);
+  const grid=document.createElement("div");grid.className="grid";
+  g.items.forEach(i=>{
+   const f=document.createElement("div");f.className="field";
+   if(i.type==="dual"){
+    f.innerHTML=`<label>${i.name}</label><div class="qtyrow">
+      <input inputmode="decimal" type="number" min="0" step="0.001" id="${prefix}_${i.id}_a" placeholder="${i.u1}">
+      <input inputmode="decimal" type="number" min="0" step="0.001" id="${prefix}_${i.id}_b" placeholder="${i.u2}">
+    </div>`;
+   }else{
+    f.innerHTML=`<label>${i.name} <span class="hint">(${i.u1})</span></label>
+      <input inputmode="decimal" type="number" min="0" step="0.001" id="${prefix}_${i.id}_a" placeholder="0">`;
+   }
+   grid.appendChild(f);
+  });el.appendChild(grid);
+ });
+}
+function readDelta(prefix){
+ const d={};
+ allItems().forEach(i=>{
+  const a=Number(document.getElementById(`${prefix}_${i.id}_a`)?.value||0);
+  const b=i.type==="dual"?Number(document.getElementById(`${prefix}_${i.id}_b`)?.value||0):0;
+  if(!validNum(a)||!validNum(b))throw new Error(`Invalid value for ${i.name}`);
+  d[i.id]={a,b};
+ });
+ return d;
+}
+function clearDelta(prefix){allItems().forEach(i=>{const a=document.getElementById(`${prefix}_${i.id}_a`);if(a)a.value="";const b=document.getElementById(`${prefix}_${i.id}_b`);if(b)b.value=""})}
+function merge(base,delta,sign){
+ const result=structuredClone(base);
+ for(const i of allItems()){
+  result[i.id]={
+   a:(base[i.id]?.a||0)+sign*(delta[i.id]?.a||0),
+   b:(base[i.id]?.b||0)+sign*(delta[i.id]?.b||0)
+  };
+ }
+ return result;
+}
+function hasAny(d){return Object.values(d).some(v=>v.a||v.b)}
+async function applyAdd(){
+ try{
+  const d=readDelta("add");if(!hasAny(d)){alert("Enter at least one stock value to add.");return}
+  stock=merge(stock,d,1);await saveStock();await saveDay("add",d);clearDelta("add");render();setStatus("Stock added and saved."); 
+ }catch(e){alert(e.message)}
+}
+async function applyOut(){
+ try{
+  const d=readDelta("out");if(!hasAny(d)){alert("Enter at least one out-stock value.");return}
+  for(const i of allItems()){
+   const cur=stock[i.id]||emptyVal(), x=d[i.id]||emptyVal();
+   if(x.a>cur.a || (i.type==="dual"&&x.b>cur.b)){
+    alert(`Out stock cannot exceed current stock for ${i.name}. Current: ${labelValue(i,cur)}`);return;
+   }
+  }
+  stock=merge(stock,d,-1);await saveStock();await saveDay("out",d);clearDelta("out");render();setStatus("Out stock recorded and saved.");
+ }catch(e){alert(e.message)}
+}
+function openDB(){
+ return new Promise((resolve,reject)=>{
+  const r=indexedDB.open(DB_NAME,DB_VERSION);
+  r.onupgradeneeded=e=>{const d=e.target.result;if(!d.objectStoreNames.contains(STOCK_STORE))d.createObjectStore(STOCK_STORE);if(!d.objectStoreNames.contains(DAY_STORE))d.createObjectStore(DAY_STORE)};
+  r.onsuccess=e=>{db=e.target.result;resolve()};
+  r.onerror=()=>reject(r.error);
+ });
+}
+function get(store,key){return new Promise((res,rej)=>{const r=db.transaction(store).objectStore(store).get(key);r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)})}
+function put(store,key,value){return new Promise((res,rej)=>{const r=db.transaction(store,"readwrite").objectStore(store).put(value,key);r.onsuccess=()=>res();r.onerror=()=>rej(r.error)})}
+async function saveStock(){await put(STOCK_STORE,"current",stock)}
+async function saveDay(kind,delta){
+ const date=document.getElementById("reportDate").value||today();
+ const old=await get(DAY_STORE,date)||{date,adds:initStock(),outs:initStock(),cash:0,upi:0,saleDetails:""};
+ const target=kind==="add"?old.adds:old.outs;
+ for(const i of allItems()){target[i.id]={a:(target[i.id]?.a||0)+(delta[i.id]?.a||0),b:(target[i.id]?.b||0)+(delta[i.id]?.b||0)}}
+ await put(DAY_STORE,date,old);
+}
+async function saveSales(){
+ const date=document.getElementById("reportDate").value||today();
+ const old=await get(DAY_STORE,date)||{date,adds:initStock(),outs:initStock(),cash:0,upi:0,saleDetails:""};
+ old.cash=Number(document.getElementById("cashSale").value||0);
+ old.upi=Number(document.getElementById("upiSale").value||0);
+ old.saleDetails=document.getElementById("saleDetails").value||"";
+ await put(DAY_STORE,date,old);setStatus("Daily sales saved.");
+}
+function setStatus(t){document.getElementById("status").textContent=t}
+function formatDate(d){const p=d.split("-");return `${p[2]}/${p[1]}/${p[0]}`}
+async function dayData(date){return await get(DAY_STORE,date)}
+function sectionMessage(title, data){
+ let s=`${title}\n`;
+ groups.forEach(g=>{s+=`\n${g.title}:\n`;g.items.forEach(i=>{s+=`▫️ ${i.name}: *${labelValue(i,data[i.id]||emptyVal())}*\n`})});
+ return s;
+}
+async function sendWhatsApp(){
+ await saveSales();
+ const date=document.getElementById("reportDate").value||today();
+ const day=await dayData(date);
+ let m=`📊 *DAILY STOCK REPORT (IN / OUT)* 📊\n\n📅 *Date:* ${formatDate(date)}\n\n`;
+ m+="🟢 ━━━━━━━━━━━━━━━━━━ 🟢\n*CURRENT IN STOCK*\n🟢 ━━━━━━━━━━━━━━━━━━ 🟢\n\n";
+ m+=sectionMessage("",stock).replace(/^\n/,"");
+ m+="\n🔴 ━━━━━━━━━━━━━━━━━━ 🔴\n*TODAY'S OUT STOCK*\n🔴 ━━━━━━━━━━━━━━━━━━ 🔴\n\n";
+ m+=`📦 *OUT STOCK:*\n`;
+ groups.forEach(g=>{m+=`\n${g.title}:\n`;g.items.forEach(i=>{const v=day?.outs?.[i.id]||emptyVal();if(v.a||v.b)m+=`▫️ ${i.name}: *${labelValue(i,v)}*\n`})});
+ m+=`\n💰 ━━━━━━━━━━━━━━━━━━ 💰\n*DAILY CASH / UPI SALE*\n💰 ━━━━━━━━━━━━━━━━━━ 💰\n\n`;
+ m+=`💵 Cash Sale: *₹${Number(day?.cash||0)}*\n📱 UPI Sale: *₹${Number(day?.upi||0)}*\n`;
+ if(day?.saleDetails)m+=`\n🧾 *SALE DETAILS:*\n${day.saleDetails}\n`;
+ window.open("https://wa.me/?text="+encodeURIComponent(m),"_blank");
+}
+async function getLastDays(){
+ const out=[];let d=new Date();for(let n=0;n<7;n++){const key=d.toISOString().slice(0,10),v=await get(DAY_STORE,key);if(v)out.push(v);d.setDate(d.getDate()-1)}return out;
+}
+async function downloadBackup(){
+ const days=await getLastDays();
+ const payload={app:"Daily Stock Report",version:1,exportedAt:new Date().toISOString(),currentStock:stock,last7Days:days};
+ const blob=new Blob([JSON.stringify(payload,null,2)],{type:"application/json"});
+ const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=`stock-backup-${today()}.json`;a.click();URL.revokeObjectURL(a.href);setStatus("7-day JSON backup downloaded.");
+}
+async function restoreBackup(ev){
+ const file=ev.target.files[0];if(!file)return;
+ try{
+  const data=JSON.parse(await file.text());
+  if(!data.currentStock||!data.last7Days)throw new Error("Invalid stock backup JSON.");
+  stock=data.currentStock;await saveStock();
+  for(const d of data.last7Days)if(d?.date)await put(DAY_STORE,d.date,d);
+  render();setStatus("Backup restored successfully.");
+ }catch(e){alert("Restore failed: "+e.message)}finally{ev.target.value=""}
+}
+async function resetAll(){
+ if(!confirm("This will permanently clear saved stock and 7-day history from this browser. Continue?"))return;
+ await new Promise((res,rej)=>{const t=db.transaction([STOCK_STORE,DAY_STORE],"readwrite");t.objectStore(STOCK_STORE).clear();t.objectStore(DAY_STORE).clear();t.oncomplete=res;t.onerror=()=>rej(t.error)});
+ stock=initStock();render();setStatus("All local stock data was cleared.");
+}
+async function load(){
+ document.getElementById("reportDate").value=today();
+ await openDB();stock=await get(STOCK_STORE,"current")||initStock();render();setStatus("Saved stock loaded from this phone.");
+}
+if("serviceWorker"in navigator)window.addEventListener("load",()=>navigator.serviceWorker.register("sw.js").catch(()=>{}));
+load();
+</script>
+</body>
+</html>
